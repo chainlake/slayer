@@ -33,12 +33,12 @@ logger = logging.getLogger(__name__)
 async def _referenced_models(
     *, query: SlayerQuery, source_model: SlayerModel, named_queries: Dict[str, SlayerQuery],
     storage: "StorageBackend", data_source: Optional[str], chain: Tuple[str, ...], spine_clash: bool,
-    failures: DocumentLoadFailures,
+    failures: DocumentLoadFailures, extra_models: Optional[List[SlayerModel]] = None,
 ) -> Tuple[List[SlayerModel], Dict[str, SlayerModel]]:
     """The root's join component plus query-written targets (the spine unless a stored model clashes with it), and the stored query-backed models among them."""
     component = await _collect_referenced_models(
         source_model=source_model, named_queries=named_queries, storage=storage, data_source=data_source,
-        failures=failures,
+        failures=failures, extra_models=extra_models,
     )
     known = {m.name for m in component}
     component.extend(await _query_written_targets(
@@ -66,6 +66,7 @@ async def build_resolved_source_bundle(
     splice_chain: Tuple[str, ...] = (),
     now: Optional[datetime] = None,
     failures: Optional[DocumentLoadFailures] = None,
+    extra_models: Optional[List[SlayerModel]] = None,
 ) -> ResolvedSourceBundle:
     """Eagerly assemble the :class:`ResolvedSourceBundle` for one execution (P11).
 
@@ -95,6 +96,7 @@ async def build_resolved_source_bundle(
     referenced_models, query_backed = await _referenced_models(
         query=query, source_model=source_model, named_queries=named_queries,
         storage=storage, data_source=walk_ds, chain=splice_chain, spine_clash=spine_clash, failures=failures,
+        extra_models=extra_models,
     )
     source_model = query_host(source_model, query=query)
 
@@ -412,6 +414,7 @@ async def _collect_referenced_models(
     storage: "StorageBackend",
     data_source: Optional[str],
     failures: DocumentLoadFailures,
+    extra_models: Optional[List[SlayerModel]] = None,
 ) -> List[SlayerModel]:
     """Transitive join-graph walk (BFS) over the bidirectional edge set,
     best-effort.
@@ -430,6 +433,10 @@ async def _collect_referenced_models(
     all_models = await _load_datasource_peers(
         preseeded=preseeded, ds=ds, storage=storage, failures=failures,
     )
+    if extra_models:
+        # Stateless bundle compile: inline peers win over stored documents,
+        # but the root/sibling preseeded copies always win over both.
+        all_models = {**all_models, **{m.name: m for m in extra_models}, **preseeded}
     universe = {**all_models, TIME_SPINE_MODEL: source_model} if is_spine(source_model) else all_models
     collected = await _bfs_connected_component(
         # The spine reaches every dataset (a query-backed one's axis is known only once spliced).

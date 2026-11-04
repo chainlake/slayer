@@ -48,6 +48,9 @@ class QueryRequest(BaseModel):
 
     name: str | None = None  # Run-by-name: backing query for a query-backed model
     source_model: SourceSpec | None = None
+    # Stateless bundle compile: peers the inline source_model's joins target.
+    # Consumed by the engine, never part of SlayerQuery.
+    referenced_models: list[SlayerModel] | None = None
     # ``measures`` and ``dimensions`` accept bare strings as a shorthand,
     # mirroring the Python API: ``"count(*)"`` is lifted to
     # ``{"formula": "count(*)"}``, ``"status"`` to ``{"name": "status"}``.
@@ -399,7 +402,13 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 # (extra="forbid") doesn't reject them.
                 dry_run = bool(payload.pop("dry_run", False))
                 explain = bool(payload.pop("explain", False))
+                # ``referenced_models`` is request-level bundle input, not a
+                # SlayerQuery field; keep the validated SlayerModel objects.
+                payload.pop("referenced_models", None)
+                referenced_models = request.referenced_models
                 run_query = SlayerQuery.model_validate(payload)
+                if referenced_models:
+                    run_kwargs["referenced_models"] = referenced_models
             usage_reporting.observe_query(run_query)
             result = await engine.execute(
                 query=run_query, variables=variables, dry_run=dry_run, explain=explain, **run_kwargs,

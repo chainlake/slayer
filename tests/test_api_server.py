@@ -686,6 +686,74 @@ class TestQueryInlineSourceModel:
         assert resp.status_code == 200, resp.text
         assert "things" in resp.json()["sql"].lower()
 
+    def test_referenced_models_resolve_inline_join(self, client: TestClient) -> None:
+        """Stateless bundle compile: the inline root's joins resolve against
+        ``referenced_models`` even when the target was never stored."""
+        resp = client.post("/datasources", json={
+            "name": "ds_bundle", "type": "sqlite", "database": ":memory:",
+        })
+        assert resp.status_code in (200, 201), resp.text
+        resp = client.post("/query", json={
+            "source_model": {
+                "name": "orders_bundle",
+                "sql_table": "orders",
+                "data_source": "ds_bundle",
+                "columns": [
+                    {"name": "customer_id", "sql": "customer_id", "type": "INT"},
+                    {"name": "amount", "sql": "amount", "type": "DOUBLE"},
+                ],
+                "joins": [{
+                    "target_model": "customers_bundle",
+                    "join_pairs": [["customer_id", "id"]],
+                    "cardinality": "many_to_one",
+                }],
+            },
+            "referenced_models": [{
+                "name": "customers_bundle",
+                "sql_table": "customers",
+                "data_source": "ds_bundle",
+                "columns": [
+                    {"name": "id", "sql": "id", "type": "INT"},
+                    {"name": "region", "sql": "region", "type": "TEXT"},
+                ],
+            }],
+            "measures": [{"formula": "amount:sum"}],
+            "dimensions": ["customers_bundle.region"],
+            "dry_run": True,
+        })
+        assert resp.status_code == 200, resp.text
+        sql = resp.json()["sql"].lower()
+        assert "customers_bundle" in sql
+        assert "join" in sql
+        assert "region" in sql
+
+    def test_inline_join_without_referenced_models_fails_clearly(self, client: TestClient) -> None:
+        """Without the bundle peer the join target is absent; the compiler
+        must fail with a readable path error, not emit SQL against a phantom
+        model."""
+        resp = client.post("/datasources", json={
+            "name": "ds_bundle_missing", "type": "sqlite", "database": ":memory:",
+        })
+        assert resp.status_code in (200, 201), resp.text
+        resp = client.post("/query", json={
+            "source_model": {
+                "name": "orders_missing_target",
+                "sql_table": "orders",
+                "data_source": "ds_bundle_missing",
+                "columns": [{"name": "customer_id", "sql": "customer_id", "type": "INT"}],
+                "joins": [{
+                    "target_model": "customers_missing",
+                    "join_pairs": [["customer_id", "id"]],
+                    "cardinality": "many_to_one",
+                }],
+            },
+            "measures": [{"formula": "customer_id:count"}],
+            "dimensions": ["customers_missing.region"],
+            "dry_run": True,
+        })
+        assert resp.status_code == 400
+        assert "join" in resp.text.lower() or "customers_missing" in resp.text.lower()
+
 
 class TestOpenAPI400Documentation:
     """Endpoints that raise HTTPException(400) should declare it in OpenAPI

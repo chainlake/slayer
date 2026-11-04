@@ -922,6 +922,7 @@ class SlayerQueryEngine:
         data_source: Optional[str] = None,
         cache: bool = False,
         refine: "QueryRefinement | dict | None" = None,
+        referenced_models: Optional[list[SlayerModel]] = None,
     ) -> SlayerResponse:
         runtime_kwarg = variables or {}
         run_input = resolve_run_input(query, refine)
@@ -939,6 +940,7 @@ class SlayerQueryEngine:
             cache=cache,
             original_input=run_input,
             original_data_source=data_source,
+            referenced_models=referenced_models,
         )
         # The one Python-warnings emission: after the response is built (under
         # ``-W error`` this raises) and path-independent (dry_run/explain/execute).
@@ -1049,6 +1051,7 @@ class SlayerQueryEngine:
         prefer_data_source: Optional[str] = None,
         override_datasource: Optional[DatasourceConfig] = None,
         splice_chain: Tuple[str, ...] = (),
+        referenced_models: Optional[list[SlayerModel]] = None,
     ) -> _Prepared:
         """Prepare portion shared by execute / evict / refresh (resolve→…→response-metadata).
 
@@ -1059,6 +1062,7 @@ class SlayerQueryEngine:
             query=query, named_queries=named_queries, runtime_kwarg=runtime_kwarg,
             prefer_data_source=prefer_data_source, override_datasource=override_datasource,
             splice_chain=splice_chain, result_order=True,
+            referenced_models=referenced_models,
         )
         sql, dialect, datasource = rendered.sql, rendered.dialect, rendered.datasource
         assert sql is not None
@@ -1104,6 +1108,7 @@ class SlayerQueryEngine:
         splice_chain: Tuple[str, ...] = (),
         as_statement: bool = False,
         result_order: bool = False,
+        referenced_models: Optional[list[SlayerModel]] = None,
     ) -> _Rendered:
         """Plan and render one statement, splicing the stored query-backed models it
         reads; warnings come from the stages the SQL emits. ``as_statement`` leaves it
@@ -1149,6 +1154,7 @@ class SlayerQueryEngine:
             splice_chain=splice_chain,
             now=self._clock(),
             failures=failures,
+            extra_models=referenced_models,
         )
         # ``build_resolved_source_bundle`` raises if unresolved, so it's populated.
         model = bundle.source_model
@@ -1400,6 +1406,7 @@ class SlayerQueryEngine:
         cache: bool = False,
         original_input: Any = None,
         original_data_source: Optional[str] = None,
+        referenced_models: Optional[list[SlayerModel]] = None,
     ) -> SlayerResponse:
         """Prepare then dry-run / explain / cache-hook / execute (a miss scans baselines first, then stores)."""
         prepared = await self._prepare_pipeline(
@@ -1408,6 +1415,7 @@ class SlayerQueryEngine:
             runtime_kwarg=runtime_kwarg,
             prefer_data_source=prefer_data_source,
             splice_chain=splice_chain,
+            referenced_models=referenced_models,
         )
 
         # dry_run: return SQL without executing. NEVER cached.
