@@ -1,0 +1,40 @@
+# Chainlake SLayer sidecar (compiler mode) — built from THIS source tree.
+#
+# Why a separate Dockerfile: the upstream `Dockerfile` runs `slayer serve`,
+# whose CLI imports `slayer.demo` (DuckDB) at module load. Current DuckDB
+# wheels SIGILL on pre-AVX2 fleet CPUs. The launcher in docker/slayer-serve.py
+# imports only `slayer.api.server` + storage and serves the same FastAPI app.
+#
+# Build (CI does this and pushes to Alibaba Cloud ACR):
+#   docker build -f Dockerfile.chainlake -t chainlake-slayer:latest .
+FROM python:3.12-slim
+
+WORKDIR /app
+
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ENV PIP_DEFAULT_TIMEOUT=120
+
+# Install the project's core deps (compiler mode needs no DB extras), then the
+# source tree itself. Poetry is removed from the runtime image.
+COPY pyproject.toml poetry.lock README.md LICENSE ./
+RUN python -m pip install --no-cache-dir --index-url "$PIP_INDEX_URL" --timeout 120 --retries 10 poetry \
+    && poetry config virtualenvs.create false \
+    && poetry install --only main --no-root --no-interaction --no-ansi \
+    && python -m pip uninstall -y poetry
+
+COPY slayer/ slayer/
+RUN python -m pip install --no-cache-dir --no-deps .
+
+# Compiler-mode launcher (AVX2-clean: no duckdb import).
+COPY --chown=1000:1000 docker/slayer-serve.py /app/serve.py
+
+# Match the Chainlake PodSecurity default (runAsUser/runAsGroup/fsGroup 1000).
+RUN useradd --create-home --uid 1000 slayer \
+    && mkdir -p /data /app \
+    && chown -R slayer:slayer /data /app
+USER slayer
+
+ENV SLAYER_STORAGE=/data/slayer.db
+EXPOSE 5143
+
+CMD ["python", "/app/serve.py"]
