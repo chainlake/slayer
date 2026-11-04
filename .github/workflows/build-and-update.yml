@@ -11,6 +11,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
 
     steps:
       - name: Checkout
@@ -47,16 +51,22 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Skip deploy notice (ArgoCD/Cloudflare secrets not configured)
+        if: env.ARGOCD_AUTH_TOKEN == '' || env.CF_ACCESS_CLIENT_ID == '' || env.CF_ACCESS_CLIENT_SECRET == ''
+        run: |
+          echo "::warning::Image pushed, but ArgoCD deploy skipped. Add ARGOCD_AUTH_TOKEN, CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET to this repository, then re-run the workflow."
+
       - name: Deploy via ArgoCD
+        if: env.ARGOCD_AUTH_TOKEN != '' && env.CF_ACCESS_CLIENT_ID != '' && env.CF_ACCESS_CLIENT_SECRET != ''
         run: |
           curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/download/v3.4.3/argocd-linux-amd64
           chmod +x /usr/local/bin/argocd
           ARGOCD_COMMON=(
             --server argocd.chainlake.io
             --grpc-web
-            --header "CF-Access-Client-Id: ${{ secrets.CF_ACCESS_CLIENT_ID }}"
-            --header "CF-Access-Client-Secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}"
-            --auth-token "${{ secrets.ARGOCD_AUTH_TOKEN }}"
+            --header "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}"
+            --header "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}"
+            --auth-token "${ARGOCD_AUTH_TOKEN}"
           )
           retry_op() {
             local tries=0
