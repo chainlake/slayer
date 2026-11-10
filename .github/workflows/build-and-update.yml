@@ -80,6 +80,7 @@ jobs:
           ref: main
           token: ${{ env.INFRA_REPO_TOKEN }}
           path: infra
+          fetch-depth: 0
 
       - name: Install kustomize
         if: env.INFRA_REPO_TOKEN != ''
