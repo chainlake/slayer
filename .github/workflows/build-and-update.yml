@@ -1,4 +1,4 @@
-name: Build and Push
+name: Build, Push, and Bump VPS Image
 
 on:
   push:
@@ -6,15 +6,20 @@ on:
       - main
   workflow_dispatch: {}
 
+concurrency:
+  group: build-slayer-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     env:
-      ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
-      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
-      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+      INFRA_REPO_TOKEN: ${{ secrets.INFRA_REPO_TOKEN }}
+      INFRA_REPO: chainlake/chainlake-infra
+      INFRA_PATH: gitops/environments/vps/manifests/slayer
+      IMAGE_NAME: chainlake-slayer
 
     steps:
       - name: Checkout
@@ -52,11 +57,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Skip deploy notice (ArgoCD/Cloudflare secrets not configured)
-        if: env.ARGOCD_AUTH_TOKEN == '' || env.CF_ACCESS_CLIENT_ID == '' || env.CF_ACCESS_CLIENT_SECRET == ''
-        run: |
-          echo "::warning::Image pushed, but ArgoCD deploy skipped. Add ARGOCD_AUTH_TOKEN, CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET to this repository, then re-run the workflow."
-
       - name: Resolve immutable image reference
         id: image
         run: |
@@ -67,31 +67,49 @@ jobs:
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy via ArgoCD
-        if: env.ARGOCD_AUTH_TOKEN != '' && env.CF_ACCESS_CLIENT_ID != '' && env.CF_ACCESS_CLIENT_SECRET != ''
+      - name: Skip GitOps bump (token not configured)
+        if: env.INFRA_REPO_TOKEN == ''
         run: |
-          curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/download/v3.4.3/argocd-linux-amd64
-          chmod +x /usr/local/bin/argocd
-          ARGOCD_COMMON=(
-            --server argocd.chainlake.io
-            --grpc-web
-            --header "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}"
-            --header "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}"
-            --auth-token "${ARGOCD_AUTH_TOKEN}"
-          )
-          retry_op() {
-            local tries=0
-            while [ $tries -lt 6 ]; do
-              tries=$((tries + 1))
-              OUT=$(argocd "$@" 2>&1) && { echo "$OUT"; return 0; }
-              echo "$OUT" | grep -q "already in progress" || { echo "$OUT"; return 1; }
-              echo "operation in progress, retry $tries/6 in 20s..."
-              sleep 20
-            done
-            echo "$OUT"
-            return 1
-          }
-          retry_op app set slayer "${ARGOCD_COMMON[@]}" \
-            --kustomize-image "chainlake-slayer=${{ steps.image.outputs.ref }}"
-          retry_op app sync slayer "${ARGOCD_COMMON[@]}" --async
-          argocd app wait slayer "${ARGOCD_COMMON[@]}" --health --timeout 600
+          echo "::warning::Image pushed to ACR, but INFRA_REPO_TOKEN is not configured; the VPS image tag was not updated."
+
+      - name: Checkout infra repo
+        if: env.INFRA_REPO_TOKEN != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.INFRA_REPO }}
+          ref: main
+          token: ${{ env.INFRA_REPO_TOKEN }}
+          path: infra
+
+      - name: Install kustomize
+        if: env.INFRA_REPO_TOKEN != ''
+        uses: imranismail/setup-kustomize@v2
+
+      - name: Bump image tag in GitOps
+        if: env.INFRA_REPO_TOKEN != ''
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_TAG: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd "infra/$INFRA_PATH"
+          kustomize edit set image "$IMAGE_NAME=$IMAGE_REF"
+          cd "$GITHUB_WORKSPACE/infra"
+          git config user.name "chainlake-ci"
+          git config user.email "ci@chainlake.io"
+          git add "$INFRA_PATH/kustomization.yaml"
+          if git diff --cached --quiet; then
+            echo "Image tag already current."
+            exit 0
+          fi
+          git commit -m "chore(vps): bump $IMAGE_NAME to $IMAGE_TAG"
+          for attempt in 1 2 3; do
+            git pull --rebase origin main
+            if git push origin main; then
+              exit 0
+            fi
+            echo "push rejected, retrying ($attempt/3)..."
+            sleep 5
+          done
+          echo "::error::Could not push the image bump after 3 attempts."
+          exit 1
